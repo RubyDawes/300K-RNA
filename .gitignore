@@ -16,3 +16,4 @@ src/junctions_merged_processed_ensembl.tsv.gz
 output/*
 *.gz
 *.bgz
+*.sql
