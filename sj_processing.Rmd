@@ -5,6 +5,7 @@ output:
 
 ```{r echo = F}
 library(data.table)
+library(GenomicRanges)
 ```
 
 ```{r}
@@ -34,23 +35,32 @@ merge[, chrom := gsub('chr', '', chrom)]
 
 
 # step 2: Filter to splice junctions where 1 end is annotated
+```{r}
+gtf <- rtracklayer::import('ref/Homo_sapiens.GRCh38.110.chr.gtf.gz')
+gtf_dt = as.data.table(gtf)
+exons = gtf_dt[type == 'exon', .(seqnames = transcript_id, start, end, strand)]
+transcripts = gtf_dt[type == 'transcript', .(seqnames = transcript_id, start, end, strand)]
+introns = GenomicRanges::setdiff(GRanges(transcripts), GRanges(exons))
+introns_dt = as.data.table(introns)
+ 
+introns_dt= gtf_dt[type == 'transcript', .(seqnames = transcript_id, chrom = seqnames)][introns_dt, on = .(seqnames)]
+```
 
 
 ```{r}
-transcripts <- fread('ref/ensembl_introns_exons.tsv.gz')
-transcripts <- transcripts[region_type %in% c('exon', 'intron')]
 
 # unique annotated starts
-ann_starts <- unique(transcripts[, .(chrom, start = region_start)])
+ann_starts <- unique(introns_dt[, .(chrom, start)])
 ann_starts[, annotated_start := 1]
 
 # unique annotated ends
-ann_ends <- unique(transcripts[, .(chrom, end = region_end)])
+ann_ends <- unique(introns_dt[, .(chrom, end)])
 ann_ends[, annotated_end := 1]
 
 # unique annotated sjs
-ann_sjs <- unique(transcripts[, .(chrom, start = region_start, end = region_end)])
+ann_sjs <- unique(introns_dt[, .(chrom, start, end)])
 ann_sjs[, annotated_sj := 1]
+
 ```
 
 
@@ -59,8 +69,10 @@ merge <- ann_starts[merge, on = .(chrom, start)]
 merge <- ann_ends[merge, on = .(chrom, end)]
 merge <- ann_sjs[merge, on = .(chrom, start, end)]
 merge[is.na(merge)] <- 0
-merge <- merge[annotated_start == 1 | annotated_end == 1]
+mergefilt <- merge[annotated_start == 1 | annotated_end == 1]
 ```
+
+
 
 
 # step 3: annotate with basic mis-splicing event categories
@@ -73,113 +85,31 @@ matrix[, annotated_start := c(1,1,1,1,1,0,0,1)]
 matrix[, annotated_end := c(1,1,1,1,0,1,1,0)]
 matrix[, splicing_event_class := c(rep('normal splicing',2), rep('exon skipping', 2), rep('cryptic acceptor', 2), rep('cryptic donor', 2))]
 
-merge <- matrix[merge, on = .(strand, annotated_sj, annotated_start, annotated_end)]
+mergefilt <- matrix[mergefilt, on = .(strand, annotated_sj, annotated_start, annotated_end)]
 ```
 
 
 ```{r}
-merge[strand == '+' & annotated_start == 1, annotated_donor := 1]
-merge[strand == '-' & annotated_end == 1, annotated_donor := 1]
+mergefilt[strand == '+' & annotated_start == 1, annotated_donor := 1]
+mergefilt[strand == '-' & annotated_end == 1, annotated_donor := 1]
 
 
-merge[strand == '+' & annotated_end == 1, annotated_acceptor := 1]
-merge[strand == '-' & annotated_start == 1, annotated_acceptor := 1]
+mergefilt[strand == '+' & annotated_end == 1, annotated_acceptor := 1]
+mergefilt[strand == '-' & annotated_start == 1, annotated_acceptor := 1]
 
-merge[is.na(annotated_donor), annotated_donor := 0]
-merge[is.na(annotated_acceptor), annotated_acceptor := 0]
+mergefilt[is.na(annotated_donor), annotated_donor := 0]
+mergefilt[is.na(annotated_acceptor), annotated_acceptor := 0]
 ```
 
 ```{r}
-merge[, sample_count := sample_count_gtex + sample_count_sra]
+mergefilt[, sample_count := sample_count_gtex + sample_count_sra]
 ```
 
 # save
 ```{r}
-fwrite(merge[, .(chrom, start, end, strand, annotated_donor, annotated_acceptor, 
+fwrite(mergefilt[, .(chrom, start, end, strand, annotated_donor, annotated_acceptor, 
                  splicing_event_class, sample_count_gtex, sample_count_sra, sample_count)], 'src/junctions_merged_processed.tsv.gz')
 ```
-
-
-
-
-# repeat for REFSEQ
-
-# step 2: Filter to splice junctions where 1 end is annotated
-
-
-```{r}
-merge <- merge(gtex, sra, by = c('chrom', 'start', 'end', 'strand'), 
-               all = TRUE, suffixes = c('_gtex', '_sra'))
-merge[, chrom := gsub('chr', '', chrom)]
-```
-
-
-```{r}
-transcripts_refseq <- fread('ref/refseq_introns_exons.tsv.gz')
-transcripts_refseq <- transcripts_refseq[region_type %in% c('exon', 'intron')]
-
-# unique annotated starts
-ann_starts <- unique(transcripts_refseq[, .(chrom, start = region_start)])
-ann_starts[, annotated_start := 1]
-
-# unique annotated ends
-ann_ends <- unique(transcripts_refseq[, .(chrom, end = region_end)])
-ann_ends[, annotated_end := 1]
-
-# unique annotated sjs
-ann_sjs <- unique(transcripts_refseq[, .(chrom, start = region_start, end = region_end)])
-ann_sjs[, annotated_sj := 1]
-```
-
-
-```{r}
-merge <- ann_starts[merge, on = .(chrom, start)]
-merge <- ann_ends[merge, on = .(chrom, end)]
-merge <- ann_sjs[merge, on = .(chrom, start, end)]
-merge[is.na(merge)] <- 0
-merge <- merge[annotated_start == 1 | annotated_end == 1]
-```
-
-
-# step 3: annotate with basic mis-splicing event categories
-
-```{r}
-matrix <- data.table(strand = c(), annotated_intron = c(), annotated_start = c(), annotated_end = c(), splicing_event_class = c())
-matrix[, strand := rep(c('+', '-'), 4)]
-matrix[, annotated_sj := c(1,1,rep(0, 6))]
-matrix[, annotated_start := c(1,1,1,1,1,0,0,1)]
-matrix[, annotated_end := c(1,1,1,1,0,1,1,0)]
-matrix[, splicing_event_class := c(rep('normal splicing',2), rep('exon skipping', 2), rep('cryptic acceptor', 2), rep('cryptic donor', 2))]
-
-merge <- matrix[merge, on = .(strand, annotated_sj, annotated_start, annotated_end)]
-```
-
-
-```{r}
-merge[strand == '+' & annotated_start == 1, annotated_donor := 1]
-merge[strand == '-' & annotated_end == 1, annotated_donor := 1]
-
-
-merge[strand == '+' & annotated_end == 1, annotated_acceptor := 1]
-merge[strand == '-' & annotated_start == 1, annotated_acceptor := 1]
-
-merge[is.na(annotated_donor), annotated_donor := 0]
-merge[is.na(annotated_acceptor), annotated_acceptor := 0]
-```
-
-```{r}
-merge[, sample_count := sample_count_gtex + sample_count_sra]
-```
-
-# save
-```{r}
-fwrite(merge[, .(chrom, start, end, strand, annotated_donor, annotated_acceptor, 
-                 splicing_event_class, sample_count_gtex, sample_count_sra, sample_count)], 'src/junctions_merged_processed_refseq.tsv.gz')
-```
-
-
-
-
 
 
 

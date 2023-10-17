@@ -14,3 +14,5 @@ src/gtex/junctions_1to22XY_gtexv2_filt.tsv.gz
 src/junctions_merged_processed_refseq.tsv.gz
 src/junctions_merged_processed_ensembl.tsv.gz
 output/*
+*.gz
+*.bgz
